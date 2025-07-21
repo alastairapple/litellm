@@ -219,3 +219,184 @@ def test_gemini_tts_completion_mock():
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# Additional tests for direct Gemini TTS implementation
+
+from litellm.llms.gemini.tts_handler import GeminiTTSHandler
+
+
+class TestGeminiTTSDirectHandler:
+    """Test the direct Gemini TTS implementation."""
+
+    def test_build_audio_request(self):
+        """Test building the Gemini audio request."""
+        gemini_tts = GeminiTTSHandler()
+        
+        headers, request_data, url = gemini_tts._build_audio_request(
+            model="gemini/gemini-2.5-flash-preview-tts",
+            input="Hello world",
+            voice="alloy",
+            optional_params={},
+            api_key="test-key",
+            api_base=None,
+        )
+        
+        assert "generativelanguage.googleapis.com" in url
+        assert "key=test-key" in url
+        assert headers["Content-Type"] == "application/json"
+        assert request_data["contents"][0]["parts"][0]["text"] == "Hello world"
+        assert request_data["generationConfig"]["audioStyle"] == "alloy"
+        assert "AUDIO" in request_data["generationConfig"]["responseModalities"]
+
+    def test_build_audio_request_with_voice_dict(self):
+        """Test building request with voice as dictionary."""
+        gemini_tts = GeminiTTSHandler()
+        
+        voice_config = {
+            "voice": "alloy",
+            "speed": 1.2,
+            "language": "en-US"
+        }
+        
+        headers, request_data, url = gemini_tts._build_audio_request(
+            model="gemini/gemini-2.5-flash-preview-tts",
+            input="Hello world",
+            voice=voice_config,
+            optional_params={},
+            api_key="test-key",
+            api_base=None,
+        )
+        
+        # Voice dict should be merged into generation config
+        assert request_data["generationConfig"]["voice"] == "alloy"
+        assert request_data["generationConfig"]["speed"] == 1.2
+        assert request_data["generationConfig"]["language"] == "en-US"
+
+    def test_build_audio_request_with_response_format(self):
+        """Test building request with custom response format."""
+        gemini_tts = GeminiTTSHandler()
+        
+        headers, request_data, url = gemini_tts._build_audio_request(
+            model="gemini/gemini-2.5-flash-preview-tts",
+            input="Hello world",
+            voice="alloy",
+            optional_params={"response_format": "wav"},
+            api_key="test-key",
+            api_base=None,
+        )
+        
+        assert request_data["generationConfig"]["responseAudioFormat"] == "WAV"
+
+    def test_process_audio_response(self):
+        """Test processing a successful Gemini audio response."""
+        gemini_tts = GeminiTTSHandler()
+        
+        # Mock response data
+        response_data = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "audio/mp3",
+                                    "data": "ZmFrZSBhdWRpbyBkYXRh"  # base64 for "fake audio data"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        
+        mock_response = MagicMock()
+        mock_response.json.return_value = response_data
+        
+        result = gemini_tts._process_audio_response(mock_response, "gemini-2.5-flash-preview-tts")
+        
+        assert result is not None
+        # The response should contain the decoded audio data
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_mocked_success(self):
+        """Test successful audio speech generation with mocked response."""
+        response_data = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "audio/mp3",
+                                    "data": "ZmFrZSBhdWRpbyBkYXRh"  # base64 for "fake audio data"
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = response_data
+        
+        with patch('litellm.llms.custom_httpx.http_handler._get_httpx_client') as mock_client:
+            mock_client.return_value.post.return_value = mock_response
+            
+            gemini_tts = GeminiTTSHandler()
+            result = gemini_tts.audio_speech(
+                model="gemini-2.5-flash-preview-tts",
+                input="Hello world",
+                voice="alloy",
+                api_key="test-key",
+            )
+            
+            assert result is not None
+            # Verify the request was made
+            mock_client.return_value.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_litellm_gemini_direct_tts():
+    """Test direct Gemini TTS through litellm.speech()."""
+    response_data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/mp3",
+                                "data": "ZmFrZSBhdWRpbyBkYXRh"  # base64 for "fake audio data"
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = response_data
+    
+    with patch('litellm.llms.custom_httpx.http_handler._get_httpx_client') as mock_client:
+        mock_client.return_value.post.return_value = mock_response
+        
+        result = litellm.speech(
+            model="gemini/gemini-2.5-flash-preview-tts",
+            input="Hello world",
+            voice="alloy",
+            api_key="test-key",
+            optional_params={"use_direct_tts": True},
+        )
+        
+        assert result is not None
+        # Verify the request was made
+        mock_client.return_value.post.assert_called_once()
+        
+        # Check that the correct URL was used
+        call_args = mock_client.return_value.post.call_args
+        assert "generativelanguage.googleapis.com" in call_args.kwargs["url"]

@@ -136,6 +136,7 @@ from .llms import baseten
 from .llms.anthropic.chat import AnthropicChatCompletion
 from .llms.azure.audio_transcriptions import AzureAudioTranscription
 from .llms.azure.azure import AzureChatCompletion, _check_dynamic_azure_params
+from .llms.azure.azure_speech_services import AzureSpeechServices
 from .llms.azure.chat.o_series_handler import AzureOpenAIO1ChatCompletion
 from .llms.azure.completion.handler import AzureTextCompletion
 from .llms.azure_ai.embed import AzureAIEmbedding
@@ -168,6 +169,7 @@ from .llms.sagemaker.chat.handler import SagemakerChatHandler
 from .llms.sagemaker.completion.handler import SagemakerLLM
 from .llms.vertex_ai import vertex_ai_non_gemini
 from .llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import VertexLLM
+from .llms.gemini.tts_handler import GeminiTTSHandler
 from .llms.vertex_ai.gemini_embeddings.batch_embed_content_handler import (
     GoogleBatchEmbeddings,
 )
@@ -245,6 +247,8 @@ google_batch_embeddings = GoogleBatchEmbeddings()
 vertex_partner_models_chat_completion = VertexAIPartnerModels()
 vertex_model_garden_chat_completion = VertexAIModelGardenModels()
 vertex_text_to_speech = VertexTextToSpeechAPI()
+azure_speech_services = AzureSpeechServices()
+gemini_tts_handler = GeminiTTSHandler()
 sagemaker_llm = SagemakerLLM()
 watsonx_chat_completion = WatsonXChatHandler()
 openai_like_embedding = OpenAILikeEmbeddingHandler()
@@ -5352,6 +5356,40 @@ def speech(  # noqa: PLR0915
             aspeech=aspeech,
             litellm_params=litellm_params_dict,
         )
+    elif custom_llm_provider == "azure_speech":
+        # Azure Speech Services (Cognitive Services) TTS
+        api_base = api_base or litellm.api_base or get_secret("AZURE_SPEECH_ENDPOINT")
+        api_key = (
+            api_key
+            or litellm.api_key
+            or get_secret("AZURE_SPEECH_KEY")
+            or get_secret("AZURE_SPEECH_API_KEY")
+        )
+        
+        azure_ad_token: Optional[str] = optional_params.get("extra_body", {}).pop(
+            "azure_ad_token", None
+        ) or get_secret("AZURE_AD_TOKEN")
+        
+        if voice is None or not (isinstance(voice, str)):
+            raise litellm.BadRequestError(
+                message="'voice' is required to be passed as a string for Azure Speech Services TTS",
+                model=model,
+                llm_provider=custom_llm_provider,
+            )
+
+        response = azure_speech_services.audio_speech(
+            model=model,
+            input=input,
+            voice=voice,
+            optional_params=optional_params,
+            api_key=api_key,
+            api_base=api_base,
+            azure_ad_token=azure_ad_token,
+            max_retries=max_retries,
+            timeout=timeout,
+            aspeech=aspeech,
+            litellm_params=litellm_params_dict,
+        )
     elif custom_llm_provider == "vertex_ai" or custom_llm_provider == "vertex_ai_beta":
         generic_optional_params = GenericLiteLLMParams(**kwargs)
 
@@ -5407,20 +5445,37 @@ def speech(  # noqa: PLR0915
             logging_obj=logging_obj,
         )
     elif custom_llm_provider == "gemini":
-        from .endpoints.speech.speech_to_completion_bridge.handler import (
-            speech_to_completion_bridge_handler,
-        )
+        # Check if we should use direct TTS or the bridge approach
+        use_direct_tts = optional_params.get("use_direct_tts", False) or "tts" in model.lower()
+        
+        if use_direct_tts:
+            # Use direct Gemini TTS endpoint
+            response = gemini_tts_handler.audio_speech(
+                model=model,
+                input=input,
+                voice=voice,
+                optional_params=optional_params,
+                api_key=api_key,
+                timeout=timeout,
+                logging_obj=logging_obj,
+                _is_async=aspeech,
+            )
+        else:
+            # Use speech-to-completion bridge (existing behavior)
+            from .endpoints.speech.speech_to_completion_bridge.handler import (
+                speech_to_completion_bridge_handler,
+            )
 
-        return speech_to_completion_bridge_handler.speech(
-            model=model,
-            input=input,
-            voice=voice,
-            optional_params=optional_params,
-            litellm_params=litellm_params_dict,
-            headers=headers or {},
-            logging_obj=logging_obj,
-            custom_llm_provider=custom_llm_provider,
-        )
+            return speech_to_completion_bridge_handler.speech(
+                model=model,
+                input=input,
+                voice=voice,
+                optional_params=optional_params,
+                litellm_params=litellm_params_dict,
+                headers=headers or {},
+                logging_obj=logging_obj,
+                custom_llm_provider=custom_llm_provider,
+            )
 
     if response is None:
         raise Exception(
